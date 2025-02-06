@@ -8,11 +8,107 @@ from phi.agent.duckdb import DuckDbAgent
 from phi.tools.pandas import PandasTools
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 from typing import List, Optional
 import re
+from fpdf import FPDF
+import base64
+import os
 
 
-# Function to create visualizations
+# Function to create and download a PDF report
+
+
+def preprocess_and_save(file):
+    try:
+        # Read the uploaded file into a DataFrame
+        if file.name.endswith('.csv'):
+            df = pd.read_csv(file, encoding='utf-8', na_values=['NA', 'N/A', 'missing'])
+        elif file.name.endswith('.xlsx'):
+            df = pd.read_excel(file, na_values=['NA', 'N/A', 'missing'])
+        else:
+            st.error("Unsupported file format. Please upload a CSV or Excel file.")
+            return None, None, None
+
+        # Ensure string columns are properly quoted
+        for col in df.select_dtypes(include=['object']):
+            df[col] = df[col].astype(str).replace({r'"': '""'}, regex=True)
+
+        # Parse dates and numeric columns
+        for col in df.columns:
+            if 'date' in col.lower():
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+            elif df[col].dtype == 'object':
+                try:
+                    df[col] = pd.to_numeric(df[col])
+                except (ValueError, TypeError):
+                    pass
+
+        # Create a temporary file to save the preprocessed data
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            temp_path = temp_file.name
+            df.to_csv(temp_path, index=False, quoting=csv.QUOTE_ALL)
+
+        return temp_path, df.columns.tolist(), df
+
+    except Exception as e:
+        st.error(f"Error processing file: {e}")
+        return None, None, None
+def generate_pdf(user_query, sql_query, query_response, fig):
+    """
+    Generate a PDF report including the user query, SQL query, query response, and visualization.
+    """
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(200, 10, "Data Analysis Report", ln=True, align="C")
+
+    # Add User Query
+    pdf.ln(10)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, "User Query:", ln=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.multi_cell(0, 8, user_query)
+
+    # Add SQL Query
+    if sql_query:
+        pdf.ln(5)
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 10, "Generated SQL Query:", ln=True)
+        pdf.set_font("Arial", "", 11)
+        pdf.multi_cell(0, 8, sql_query)
+
+    # Add Query Response
+    pdf.ln(5)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, "Query Response:", ln=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.multi_cell(0, 8, query_response)
+
+    # Save visualization as image if available
+    img_path = None
+    if fig:
+        img_path = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+        pio.write_image(fig, img_path, format="png")
+
+        # Add visualization to PDF
+        pdf.ln(5)
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 10, "Visualization:", ln=True)
+        pdf.ln(5)
+        pdf.image(img_path, x=10, w=180)
+
+    # Save PDF
+    pdf_path = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf").name
+    pdf.output(pdf_path)
+
+    # Remove temp image if created
+    if img_path:
+        os.remove(img_path)
+
+    return pdf_path
+
 def create_visualization(df: pd.DataFrame, viz_type: str,
                          x_column: Optional[str] = None,
                          y_columns: Optional[List[str]] = None,
@@ -51,7 +147,6 @@ def create_visualization(df: pd.DataFrame, viz_type: str,
     except Exception as e:
         st.error(f"Error creating visualization: {e}")
         return None
-
 
 def suggest_visualization(df: pd.DataFrame, columns: List[str], query: str) -> dict:
     """
@@ -108,45 +203,19 @@ def suggest_visualization(df: pd.DataFrame, columns: List[str], query: str) -> d
     return viz_params
 
 
-# Function to preprocess and save the uploaded file
-def preprocess_and_save(file):
-    try:
-        # Read the uploaded file into a DataFrame
-        if file.name.endswith('.csv'):
-            df = pd.read_csv(file, encoding='utf-8', na_values=['NA', 'N/A', 'missing'])
-        elif file.name.endswith('.xlsx'):
-            df = pd.read_excel(file, na_values=['NA', 'N/A', 'missing'])
-        else:
-            st.error("Unsupported file format. Please upload a CSV or Excel file.")
-            return None, None, None
+# Function to create a download link
+def get_pdf_download_link(pdf_path, filename="report.pdf"):
+    """
+    Generate a download link for the generated PDF report.
+    """
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
 
-        # Ensure string columns are properly quoted
-        for col in df.select_dtypes(include=['object']):
-            df[col] = df[col].astype(str).replace({r'"': '""'}, regex=True)
-
-        # Parse dates and numeric columns
-        for col in df.columns:
-            if 'date' in col.lower():
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-            elif df[col].dtype == 'object':
-                try:
-                    df[col] = pd.to_numeric(df[col])
-                except (ValueError, TypeError):
-                    pass
-
-        # Create a temporary file to save the preprocessed data
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
-            temp_path = temp_file.name
-            df.to_csv(temp_path, index=False, quoting=csv.QUOTE_ALL)
-
-        return temp_path, df.columns.tolist(), df
-
-    except Exception as e:
-        st.error(f"Error processing file: {e}")
-        return None, None, None
+    b64 = base64.b64encode(pdf_bytes).decode()
+    return f'<a href="data:application/pdf;base64,{b64}" download="{filename}">📥 Download Report (PDF)</a>'
 
 
-# Streamlit app
+# Streamlit UI
 st.title("📊 Data Analyst Agent")
 
 # Sidebar for API keys
@@ -163,29 +232,18 @@ with st.sidebar:
 uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"])
 
 if uploaded_file is not None and "openai_key" in st.session_state:
-    # Preprocess and save the uploaded file
     temp_path, columns, df = preprocess_and_save(uploaded_file)
 
     if temp_path and columns and df is not None:
-        # Display the uploaded data as a table
         st.write("Uploaded Data:")
         st.dataframe(df)
 
-        # Display the columns of the uploaded data
-        st.write("Uploaded columns:", columns)
-
-        # Configure the semantic model
+        # Configure DuckDbAgent
         semantic_model = {
             "tables": [
-                {
-                    "name": "uploaded_data",
-                    "description": "Contains the uploaded dataset.",
-                    "path": temp_path,
-                }
+                {"name": "uploaded_data", "description": "Contains the uploaded dataset.", "path": temp_path}
             ]
         }
-
-        # Initialize the DuckDbAgent
         duckdb_agent = DuckDbAgent(
             model=OpenAIChat(model="gpt-4", api_key=st.session_state.openai_key),
             semantic_model=json.dumps(semantic_model),
@@ -197,11 +255,10 @@ if uploaded_file is not None and "openai_key" in st.session_state:
             system_prompt="You are an expert data analyst. Generate SQL queries to solve the user's query. Return only the SQL query, enclosed in ```sql ``` and give the final answer.",
         )
 
-        # Initialize code storage in session state
         if "generated_code" not in st.session_state:
             st.session_state.generated_code = None
 
-        # Main query input widget
+        # User Query Input
         user_query = st.text_area("Ask a query about the data:")
 
         if st.button("Submit Query"):
@@ -209,75 +266,64 @@ if uploaded_file is not None and "openai_key" in st.session_state:
                 st.warning("Please enter a query.")
             else:
                 try:
-                    # Show loading spinner while processing
                     with st.spinner('Processing your query...'):
-                        # Get the response from DuckDbAgent
                         response1 = duckdb_agent.run(user_query)
 
-                        # Extract the content from the RunResponse object
-                        if hasattr(response1, 'content'):
-                            response_content = response1.content
-                        else:
-                            response_content = str(response1)
-                        response = duckdb_agent.print_response(
-                            user_query,
-                            stream=True,
-                        )
+                        # Extract content
+                        response_content = response1.content if hasattr(response1, 'content') else str(response1)
+                        response = duckdb_agent.print_response(user_query, stream=True)
 
-                    # Display the response in Streamlit
+                    # Extract SQL query from response
+                    sql_query_match = re.search(r"```sql\n(.*?)\n```", response_content, re.DOTALL)
+                    sql_query = sql_query_match.group(1) if sql_query_match else "N/A"
+
+                    # Display results
                     st.markdown(response_content)
 
-                    # Visualization section
+                    # Visualization Section
                     st.markdown("---")
                     st.subheader("📈 Visualization")
 
-                    # Create columns for visualization controls
                     col1, col2, col3 = st.columns([2, 2, 1])
 
                     with col1:
                         viz_type = st.selectbox(
-                            "Select visualization type:",
-                            ["bar", "line", "scatter", "pie", "histogram", "box"],
-                            index=0
+                            "Select visualization type:", ["bar", "line", "scatter", "pie", "histogram", "box"], index=0
                         )
 
-                    # Get suggested visualization parameters
                     suggested_viz = suggest_visualization(df, columns, user_query)
 
                     with col2:
                         x_column = st.selectbox(
-                            "Select X-axis column:",
-                            columns,
+                            "Select X-axis column:", columns,
                             index=columns.index(suggested_viz['x_column']) if suggested_viz[
                                                                                   'x_column'] in columns else 0
                         )
 
                     with col3:
                         color_column = st.selectbox(
-                            "Select color column (optional):",
-                            ["None"] + columns,
-                            index=0
+                            "Select color column (optional):", ["None"] + columns, index=0
                         )
 
-                    # For y-axis selection (multiple possible for line charts)
                     y_columns = st.multiselect(
-                        "Select Y-axis column(s):",
-                        columns,
+                        "Select Y-axis column(s):", columns,
                         default=suggested_viz['y_columns'] if suggested_viz['y_columns'] else []
                     )
 
-                    # Create visualization
+                    # Generate Visualization
+                    fig = None
                     if y_columns or viz_type in ['histogram', 'pie']:
                         fig = create_visualization(
-                            df,
-                            viz_type=viz_type,
-                            x_column=x_column,
-                            y_columns=y_columns,
+                            df, viz_type=viz_type, x_column=x_column, y_columns=y_columns,
                             color_column=None if color_column == "None" else color_column,
                             title=f"{viz_type.capitalize()} Chart: {user_query}"
                         )
                         if fig:
                             st.plotly_chart(fig, use_container_width=True)
+
+                    # Generate and Provide PDF Download
+                    pdf_path = generate_pdf(user_query, sql_query, response_content, fig)
+                    st.markdown(get_pdf_download_link(pdf_path), unsafe_allow_html=True)
 
                 except Exception as e:
                     st.error(f"Error generating response from the DuckDbAgent: {e}")
