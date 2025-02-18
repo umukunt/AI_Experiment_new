@@ -51,3 +51,18 @@ An AI data analysis Agent built using the phidata Agent framework and Openai's g
 4. Ask questions about your data in natural language
 5. View the results and generated visualizations
 
+
+
+
+### Create the Enviornement
+
+```bash
+conda create -n agentic_ai_env python=3.11 -y
+```
+
+### activate the enviornment
+
+```bash
+conda activate agentic_ai_env
+```
+
