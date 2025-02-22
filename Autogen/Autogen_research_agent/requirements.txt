@@ -1,0 +1,6 @@
+autogen
+scholarly
+python-dotenv
+streamlit
+langchain
+groq
